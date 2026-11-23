@@ -139,8 +139,9 @@ class Game:
     def get_legal_moves(self):
         """Returns valid column indices."""
 
+        order = [3, 2, 4, 1, 5, 0, 6]
         moves = []
-        for col in range(WIDTH):
+        for col in order:
             if len(self.game[col]) < HEIGHT:
                 moves.append(col)
 
