@@ -9,7 +9,7 @@ class Game:
         (0, -1),    # DOWN
         (1, 0),     # RIGHT-LEFT
         (-1, 1),    # UP-LEFT - DOWN-RIGHT
-        (1, 1),    # UP-RIGHT - DOWN-LEFT
+        (1, 1),     # UP-RIGHT - DOWN-LEFT
     )
 
     
@@ -26,6 +26,7 @@ class Game:
         self.connected_four_p0 = 0
         self.connected_four_p1 = 0
         self.moves_played = 0
+        self.moves_list = []
 
     
     def allowed_cell(self, x, y):
@@ -47,6 +48,8 @@ class Game:
             raise ValueError("Not allowed move")
 
         col.append(self.turn)
+
+        gained = 0
 
         for dx, dy in self.cf_check_directions:
             
@@ -82,17 +85,63 @@ class Game:
             # current cell is counted twice, so we subtract 4 instead of 
 
             if count-4 > 0:
-                if self.turn == 0:
-                    self.connected_four_p0 += count-4
+                gained += count-4
 
-                else:
-                    self.connected_four_p1 += count-4                
+        if self.turn == 0:
+            self.connected_four_p0 += gained
+        else:
+            self.connected_four_p1 += gained
 
         self.turn = 1 - self.turn
         self.moves_played += 1
-    
+        self.moves_list.append((move, gained))
+
+    def undo_move(self):
+        """ Undos a move """
+
+        move, gained = self.moves_list.pop()
+
+        # undo the turn first so the current turn becomes the same turn that originally played the move
+        self.turn = 1 - self.turn
+
+        if self.turn == 0:
+            self.connected_four_p0 -= gained
+        else:
+            self.connected_four_p1 -= gained
+        
+        self.game[move].pop()
+        self.moves_played -= 1
 
     def check_finished(self):
         """ Checks if every cell if full (thus the game has endded) """
 
         return self.moves_played >= WIDTH * HEIGHT
+
+    def create_copy(self):
+        """ Creates a copy of the current game """
+
+        copy = Game()
+
+        for i in range(WIDTH):
+            for num in self.game[i]:
+                copy.game[i].append(num)
+        
+        copy.connected_four_p0 = self.connected_four_p0
+        copy.connected_four_p1 = self.connected_four_p1
+        copy.moves_played = self.moves_played
+        copy.turn = self.turn
+
+        for move in self.moves_list:
+            copy.moves_list.append(move)
+
+        return copy
+
+    def get_legal_moves(self):
+        """Returns valid column indices."""
+
+        moves = []
+        for col in range(WIDTH):
+            if len(self.game[col]) < HEIGHT:
+                moves.append(col)
+
+        return moves
