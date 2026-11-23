@@ -18,6 +18,9 @@ def max_value(game, k, depth, alpha, beta):
         game.play_move(move)
 
         node_value, _  = min_value(game, k, depth+1, alpha, beta)
+
+        game.undo_move()
+
         if node_value > val:
             val = node_value
             best_move = move
@@ -27,8 +30,6 @@ def max_value(game, k, depth, alpha, beta):
 
         if alpha >= beta:
             break
-        
-        game.undo_move()
     
     return val, best_move
 
@@ -43,6 +44,9 @@ def min_value(game, k, depth, alpha, beta):
         game.play_move(move)
 
         node_value, _ = max_value(game, k, depth+1, alpha, beta)
+
+        game.undo_move()
+
         if node_value < val:
             val = node_value
             best_move = move
@@ -52,8 +56,6 @@ def min_value(game, k, depth, alpha, beta):
 
         if alpha >= beta:
             break
-        
-        game.undo_move()
 
     return val, best_move
 
