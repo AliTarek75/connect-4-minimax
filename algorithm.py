@@ -3,12 +3,11 @@ from heuristics import temp_heuristic
 def get_best_move(game, k):
 
     copy = game.create_copy()
-
-    best = max_value(copy, k, 0)
+    best = max_value(copy, k, 0, -float('inf'), float('inf'))
 
     return best
 
-def max_value(game, k, depth):
+def max_value(game, k, depth, alpha, beta):
     if depth == k or game.check_finished():
         return temp_heuristic(game), None
 
@@ -18,16 +17,22 @@ def max_value(game, k, depth):
     for move in game.get_legal_moves():
         game.play_move(move)
 
-        node_value, _  = min_value(game, k, depth+1)
+        node_value, _  = min_value(game, k, depth+1, alpha, beta)
         if node_value > val:
             val = node_value
             best_move = move
+
+        if val > alpha:
+            alpha = val
+
+        if alpha >= beta:
+            break
         
         game.undo_move()
     
     return val, best_move
 
-def min_value(game, k, depth):
+def min_value(game, k, depth, alpha, beta):
     if depth == k or game.check_finished():
         return temp_heuristic(game), None
 
@@ -37,10 +42,16 @@ def min_value(game, k, depth):
     for move in game.get_legal_moves():
         game.play_move(move)
 
-        node_value, _ = max_value(game, k, depth+1)
+        node_value, _ = max_value(game, k, depth+1, alpha, beta)
         if node_value < val:
             val = node_value
             best_move = move
+
+        if val < beta:
+            beta = val
+
+        if alpha >= beta:
+            break
         
         game.undo_move()
 
