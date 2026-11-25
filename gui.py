@@ -15,8 +15,8 @@ ERROR = "#ff5d8f"
 
 BOARD_BG = "#1b2a6b"
 HOLE = "#0b1020"
-HUMAN = "#e53935"
-AI = "#fdd835"
+RED = "#e53935"
+YELLOW = "#fdd835"
 HOVER = "#2b3a85"
 
 MAX_COLOR = "#38e1c6"
@@ -37,9 +37,6 @@ X_GAP = 54
 Y_GAP = 80
 PAD = 44
 
-HUMAN_ID = 0
-
-
 def fmt(v):
     if v is None:
         return "?"
@@ -49,7 +46,6 @@ def fmt(v):
         return "-inf"
     return f"{v:.2f}".rstrip("0").rstrip(".") if isinstance(v, float) else str(v)
 
-
 class GUI:
     def __init__(self, root):
         self.root = root
@@ -58,13 +54,21 @@ class GUI:
 
         self.game = Game()
         self.k = 3
+        self.color_choice = "red"
+        self.human_id = 0
+        self.ai_id = 1
+        self.human_color = RED
+        self.ai_color = YELLOW
         self.tree = None
         self.max_depth = 1
         self.drawn = []
         self.busy = False
         self.total_pruned = 0
+        self.total_nodes = 0
         self.hover_col = None
         self.last_move = None
+        self.root_evals = {}
+        self.best_col = None
 
         self.setup = tk.Frame(root, bg=BG)
         self.main = tk.Frame(root, bg=BG)
@@ -73,12 +77,12 @@ class GUI:
         self.show_setup()
 
     def build_setup(self):
-        box = tk.Frame(self.setup, bg=CARD, padx=50, pady=40)
-        box.pack(padx=120, pady=120)
+        box = tk.Frame(self.setup, bg=CARD, padx=50, pady=36)
+        box.pack(padx=120, pady=100)
 
         tk.Label(box, text="Connect 4", bg=CARD, fg=TEXT, font=FONT_XL).pack()
         tk.Label(box, text="Minimax with alpha-beta pruning", bg=CARD, fg=MUTED,
-                 font=FONT).pack(pady=(2, 24))
+                 font=FONT).pack(pady=(2, 22))
 
         tk.Label(box, text="Search depth (K)", bg=CARD, fg=MUTED, font=FONT).pack()
         self.k_var = tk.StringVar(value="3")
@@ -89,9 +93,33 @@ class GUI:
         self.k_entry.bind("<Return>", lambda e: self.start_game())
 
         self.k_error = tk.Label(box, text="", bg=CARD, fg=ERROR, font=FONT)
-        self.k_error.pack(pady=(0, 14))
+        self.k_error.pack(pady=(0, 10))
+
+        tk.Label(box, text="Your color", bg=CARD, fg=MUTED, font=FONT).pack()
+        row = tk.Frame(box, bg=CARD)
+        row.pack(pady=(6, 18))
+        self.color_cv = {}
+        for name, hexcol, sub in (("red", RED, "You move first"),
+                                  ("yellow", YELLOW, "AI moves first")):
+            f = tk.Frame(row, bg=CARD, padx=12)
+            f.pack(side="left")
+            cv = tk.Canvas(f, width=84, height=84, bg=CARD, highlightthickness=0,
+                           cursor="hand2")
+            cv.pack()
+            cv.bind("<Button-1>", lambda e, n=name: self.pick_color(n))
+            tk.Label(f, text=sub, bg=CARD, fg=MUTED, font=("Segoe UI", 9)).pack()
+            self.color_cv[name] = (cv, hexcol)
+        self.pick_color("red")
 
         self.button(box, "Start Game", self.start_game).pack()
+
+    def pick_color(self, name):
+        self.color_choice = name
+        for n, (cv, hexcol) in self.color_cv.items():
+            cv.delete("all")
+            if n == name:
+                cv.create_oval(4, 4, 80, 80, outline="white", width=3)
+            cv.create_oval(14, 14, 70, 70, fill=hexcol, outline="")
 
     def show_setup(self):
         self.main.pack_forget()
@@ -108,6 +136,16 @@ class GUI:
             self.k_error.config(text="Enter a whole number, 1 or more")
             return
         self.k = k
+
+        if self.color_choice == "red":
+            self.human_id, self.ai_id = 0, 1
+            self.human_color, self.ai_color = RED, YELLOW
+        else:
+            self.human_id, self.ai_id = 1, 0
+            self.human_color, self.ai_color = YELLOW, RED
+        self.you_title.config(fg=self.human_color)
+        self.ai_title.config(fg=self.ai_color)
+
         self.setup.pack_forget()
         self.main.pack(fill="both", expand=True)
         self.k_label.config(text=f"K = {k}")
@@ -129,29 +167,25 @@ class GUI:
         self.k_label = tk.Label(ctrl, text="K = 3", bg=CARD, fg=TEXT, font=FONT_B)
         self.k_label.pack(side="left", padx=(0, 16))
 
-        tk.Label(ctrl, text="Show depth", bg=CARD, fg=MUTED, font=FONT).pack(side="left")
-        self.show_var = tk.IntVar(value=1)
-        sp = tk.Spinbox(ctrl, from_=0, to=99, width=3, textvariable=self.show_var,
-                        command=self.apply_depth, bg=CARD_2, fg=TEXT, buttonbackground=CARD_2,
-                        relief="flat", insertbackground=TEXT, font=FONT_B, justify="center")
-        sp.pack(side="left", padx=(6, 0))
-        sp.bind("<Return>", lambda e: self.apply_depth())
-
         self.button(ctrl, "New Game", self.show_setup).pack(side="right")
 
         score = tk.Frame(left, bg=BG)
         score.pack(fill="x", pady=(10, 0))
         self.you_var = tk.StringVar(value="0")
         self.ai_var = tk.StringVar(value="0")
-        for title, var, color, side in (("YOU", self.you_var, HUMAN, "left"),
-                                         ("AI", self.ai_var, AI, "right")):
+        titles = {}
+        for key, title, var, side in (("you", "YOU", self.you_var, "left"),
+                                      ("ai", "AI", self.ai_var, "right")):
             c = tk.Frame(score, bg=CARD, padx=16, pady=8)
             c.pack(side=side, expand=True, fill="x",
                    padx=(0, 5) if side == "left" else (5, 0))
-            tk.Label(c, text=title, bg=CARD, fg=color, font=FONT_B).pack()
+            titles[key] = tk.Label(c, text=title, bg=CARD, fg=TEXT, font=FONT_B)
+            titles[key].pack()
             tk.Label(c, textvariable=var, bg=CARD, fg=TEXT, font=FONT_XL).pack()
             tk.Label(c, text="connected fours", bg=CARD, fg=MUTED,
                      font=("Segoe UI", 8)).pack()
+        self.you_title = titles["you"]
+        self.ai_title = titles["ai"]
 
         self.status = tk.Label(left, text="", bg=BG, fg=TEXT, font=("Segoe UI", 12, "bold"))
         self.status.pack(pady=(10, 6))
@@ -162,6 +196,10 @@ class GUI:
         self.board.bind("<Button-1>", self.on_board_click)
         self.board.bind("<Motion>", self.on_board_motion)
         self.board.bind("<Leave>", self.on_board_leave)
+
+        self.eval_canvas = tk.Canvas(left, width=WIDTH * CELL + 24, height=40,
+                                     bg=BG, highlightthickness=0)
+        self.eval_canvas.pack(pady=(6, 0))
 
         grid = tk.Frame(right, bg=BG)
         grid.pack(fill="x")
@@ -186,6 +224,20 @@ class GUI:
             dot.pack(side="left")
             tk.Label(legend, text=text, bg=BG, fg=MUTED, font=FONT).pack(side="left",
                                                                          padx=(4, 14))
+
+        depth_card = tk.Frame(right, bg=CARD, padx=12, pady=8)
+        depth_card.pack(fill="x", pady=(0, 6))
+        top = tk.Frame(depth_card, bg=CARD)
+        top.pack(fill="x")
+        self.show_var = tk.IntVar(value=1)
+        self.depth_label = tk.Label(top, text="Levels shown: -", bg=CARD, fg=TEXT, font=FONT_B)
+        self.depth_label.pack(side="left")
+        self.button(top, "Show more", lambda: self.change_depth(1)).pack(side="right")
+        self.button(top, "Show less", lambda: self.change_depth(-1)).pack(side="right", padx=(0, 8))
+        tk.Label(depth_card, bg=CARD, fg=MUTED, font=("Segoe UI", 9), justify="left",
+                 anchor="w", wraplength=620,
+                 text="Only the first level is shown. Press \"Show more\" to open deeper levels "
+                      "of the search tree, or click any circle to open / fold it.").pack(fill="x", pady=(6, 0))
 
         box = tk.Frame(right, bg=BG)
         box.pack(fill="both", expand=True)
@@ -218,30 +270,40 @@ class GUI:
         self.total_nodes = 0
         self.last_move = None
         self.hover_col = None
+        self.root_evals = {}
+        self.best_col = None
         for var in self.stat_vars.values():
             var.set("-")
         self.canvas.delete("all")
+        self.depth_label.config(text="Levels shown: -")
         self.tip.place_forget()
         self.update_scores()
         self.draw_board()
+        self.draw_eval_strip()
         self.update_moves_played()
-        self.set_status("Your turn", HUMAN)
+
+        if self.game.turn != self.human_id:
+            self.busy = True
+            self.set_status("AI thinking...", self.ai_color)
+            self.root.after(60, self.ai_turn)
+        else:
+            self.set_status("Your turn", self.human_color)
 
     def set_status(self, text, color=TEXT):
         self.status.config(text=text, fg=color)
 
     def piece_color(self, player):
-        return HUMAN if player == HUMAN_ID else AI
+        return RED if player == 0 else YELLOW
 
     def update_scores(self):
-        self.you_var.set(str(self.game.connected_four[0]))
-        self.ai_var.set(str(self.game.connected_four[1]))
+        self.you_var.set(str(self.game.connected_four[self.human_id]))
+        self.ai_var.set(str(self.game.connected_four[self.ai_id]))
 
     def update_moves_played(self):
         self.stat_vars["Moves played"].set(str(self.game.moves_played))
 
     def on_board_click(self, event):
-        if self.busy or self.game.check_finished() or self.game.turn != HUMAN_ID:
+        if self.busy or self.game.check_finished() or self.game.turn != self.human_id:
             return
         col = (event.x - 12) // CELL
         if col < 0 or col >= WIDTH:
@@ -261,10 +323,15 @@ class GUI:
             return
 
         self.busy = True
-        self.set_status("AI thinking...", AI)
+        self.set_status("AI thinking...", self.ai_color)
         self.root.after(60, self.ai_turn)
 
     def ai_turn(self):
+        if self.game.check_finished():
+            self.busy = False
+            self.show_result()
+            return
+
         val, col, search_time = get_best_move(self.game, self.k)
         print(f"[AI] k={self.k} -> col={col} value={val} ({search_time:.3f}s)")
 
@@ -278,12 +345,16 @@ class GUI:
         records = [dict(n) for n in algorithm.nodes]
         pruned_now = sum(1 for n in records if n['pruned'])
         self.total_pruned += pruned_now
+        self.total_nodes += len(records)
         self.stat_vars["Search time"].set(f"{search_time:.3f} s")
         self.stat_vars["Nodes"].set(str(len(records)))
         self.stat_vars["Pruned (move)"].set(str(pruned_now))
         self.stat_vars["Pruned (total)"].set(str(self.total_pruned))
-        self.total_nodes += len(records)
         self.stat_vars["Nodes (total)"].set(str(self.total_nodes))
+
+        self.root_evals = {r['move']: r['value'] for r in records if r['depth'] == 1}
+        self.best_col = col
+        self.draw_eval_strip()
 
         self.update_scores()
         self.draw_board()
@@ -293,7 +364,7 @@ class GUI:
         if self.game.check_finished():
             self.show_result()
         else:
-            self.set_status("Your turn", HUMAN)
+            self.set_status("Your turn", self.human_color)
 
         self.root.after(250, self.unlock)
 
@@ -301,12 +372,12 @@ class GUI:
         self.busy = False
 
     def show_result(self):
-        mine = self.game.connected_four[0]
-        theirs = self.game.connected_four[1]
+        mine = self.game.connected_four[self.human_id]
+        theirs = self.game.connected_four[self.ai_id]
         if theirs > mine:
-            self.set_status(f"AI wins  {theirs} - {mine}", AI)
+            self.set_status(f"AI wins  {theirs} - {mine}", self.ai_color)
         elif mine > theirs:
-            self.set_status(f"You win  {mine} - {theirs}", HUMAN)
+            self.set_status(f"You win  {mine} - {theirs}", self.human_color)
         else:
             self.set_status(f"Draw  {mine} - {theirs}", TEXT)
 
@@ -328,7 +399,9 @@ class GUI:
         h = HEIGHT * CELL + 24
         self.round_rect(b, 2, 2, w - 2, h - 2, 22, BOARD_BG)
 
-        if self.hover_col is not None and not self.busy and not self.game.check_finished():
+        can_play = (not self.busy and not self.game.check_finished()
+                    and self.game.turn == self.human_id)
+        if self.hover_col is not None and can_play:
             x0 = 12 + self.hover_col * CELL
             self.round_rect(b, x0 + 3, 8, x0 + CELL - 3, h - 8, 18, HOVER)
 
@@ -345,14 +418,27 @@ class GUI:
                     b.create_oval(x - R - 3, y - R - 3, x + R + 3, y + R + 3,
                                   outline="white", width=3)
 
+    def draw_eval_strip(self):
+        c = self.eval_canvas
+        c.delete("all")
+        for col in range(WIDTH):
+            x0 = 12 + col * CELL
+            chosen = (col == self.best_col)
+            self.round_rect(c, x0 + 3, 2, x0 + CELL - 3, 36, 10,
+                            ACCENT if chosen else CARD_2)
+            if col in self.root_evals:
+                text = fmt(self.root_evals[col])
+                color = "white" if chosen else TEXT
+            else:
+                text, color = "-", MUTED
+            c.create_text(x0 + CELL // 2, 19, text=text, fill=color, font=FONT_B)
+
     def round_rect(self, canvas, x1, y1, x2, y2, r, fill):
         pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
                x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
         canvas.create_polygon(pts, smooth=True, fill=fill, outline="")
 
     def build_tree(self, flat, root_value):
-        """Records arrive children-first. pending[d] = nodes of depth d waiting for
-        a parent; when a node of depth d arrives, pending[d+1] are its children."""
         pending = {}
         deepest = 1
         for rec in flat:
@@ -369,6 +455,14 @@ class GUI:
         self.max_depth = deepest
         self.apply_depth()
 
+    def change_depth(self, delta):
+        try:
+            cur = int(self.show_var.get())
+        except (tk.TclError, ValueError):
+            cur = 1
+        self.show_var.set(max(0, min(self.max_depth, cur + delta)))
+        self.apply_depth()
+
     def apply_depth(self):
         if self.tree is None:
             return
@@ -376,6 +470,9 @@ class GUI:
             limit = int(self.show_var.get())
         except (tk.TclError, ValueError):
             limit = 1
+        limit = max(0, min(self.max_depth, limit))
+        self.show_var.set(limit)
+        self.depth_label.config(text=f"Levels shown: {limit} / {self.max_depth}")
         self.set_open(self.tree, limit)
         self.draw_tree()
 
@@ -467,7 +564,6 @@ class GUI:
                 f"pruned   {node['pruned']}")
         self.tip.config(text=text)
         self.tip.place(x=event.x + 16, y=event.y + 16)
-
 
 if __name__ == "__main__":
     root = tk.Tk()

@@ -49,6 +49,7 @@ class Game:
         self.turn = 0
         self.connected_four = [0, 0]
         self.moves_played = 0
+        self.ai = 1
         self.moves_list = []
 
         # counts the difference of every single window of 4 that is can be a possible connected 4, weighted by how close it is 
@@ -123,7 +124,8 @@ class Game:
     def heuristic(self):
         """returns the heuristic of the current stats, it combines actual score difference + weighted potential difference."""
 
-        return (self.connected_four[1] - self.connected_four[0]) + self.window_score_diff
+        sign = 1 if self.ai == 1 else -1
+        return sign * ((self.connected_four[1] - self.connected_four[0]) + self.window_score_diff)
 
     def check_finished(self):
         return self.moves_played >= WIDTH * HEIGHT
@@ -142,6 +144,7 @@ class Game:
         """ Creates a copy of the current game """
 
         copy = Game()
+        copy.ai = self.ai 
         copy.game = [list(col) for col in self.game]
         copy.connected_four = list(self.connected_four)
         copy.window_score_diff = self.window_score_diff
