@@ -1,23 +1,49 @@
-from heuristics import temp_heuristic
+import time
+
+nodes = []
+def save(depth, move, value, alpha, beta, is_max, is_leaf):
+    nodes.append({
+        'depth':   depth,
+        'move':    move,
+        'value':   value,
+        'alpha':   alpha,
+        'beta':    beta,
+        'is_max':  is_max,
+        'is_leaf': is_leaf,
+        'pruned':  False,
+    })
+
 
 def get_best_move(game, k):
-
+    nodes.clear()
     copy = game.create_copy()
-    best = max_value(copy, k, 0, -float('inf'), float('inf'))
 
-    return best
+    start = time.time()
+    val, best_move = max_value(copy, k, 0, -float('inf'), float('inf'))
+    elapsed = time.time() - start
+
+    return val, best_move, elapsed
+
 
 def max_value(game, k, depth, alpha, beta):
     if depth == k or game.check_finished():
-        return temp_heuristic(game), None
+        return game.heuristic(), None
 
     val = -float('inf')
     best_move = -1
 
     for move in game.get_legal_moves():
         game.play_move(move)
+        node_value, _ = min_value(game, k, depth + 1, alpha, beta)
 
-        node_value, _  = min_value(game, k, depth+1, alpha, beta)
+        save(depth=depth + 1,
+             move=move,
+             value=node_value,
+             alpha=alpha,
+             beta=beta,
+             is_max=False,
+             is_leaf=depth + 1 == k or game.check_finished()
+        )
 
         game.undo_move()
 
@@ -25,25 +51,33 @@ def max_value(game, k, depth, alpha, beta):
             val = node_value
             best_move = move
 
-        if val > alpha:
-            alpha = val
-
+        alpha = max(alpha, val)
         if alpha >= beta:
+            nodes[-1]['pruned'] = True
             break
-    
+
     return val, best_move
+
 
 def min_value(game, k, depth, alpha, beta):
     if depth == k or game.check_finished():
-        return temp_heuristic(game), None
+        return game.heuristic(), None
 
     val = float('inf')
     best_move = -1
 
     for move in game.get_legal_moves():
         game.play_move(move)
+        node_value, _ = max_value(game, k, depth + 1, alpha, beta)
 
-        node_value, _ = max_value(game, k, depth+1, alpha, beta)
+        save(depth=depth + 1,
+             move=move,
+             value=node_value,
+             alpha=alpha,
+             beta=beta,
+             is_max=True,
+             is_leaf=depth + 1 == k or game.check_finished()
+        )
 
         game.undo_move()
 
@@ -51,12 +85,9 @@ def min_value(game, k, depth, alpha, beta):
             val = node_value
             best_move = move
 
-        if val < beta:
-            beta = val
-
+        beta = min(beta, val)
         if alpha >= beta:
+            nodes[-1]['pruned'] = True
             break
 
     return val, best_move
-
-    
