@@ -263,6 +263,8 @@ class GUI:
 
     def reset_game(self):
         self.game = Game()
+        self.game.ai = self.ai_id
+        self.tree = None
         self.tree = None
         self.drawn = []
         self.busy = False
