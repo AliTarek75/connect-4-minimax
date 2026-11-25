@@ -24,6 +24,7 @@ MIN_COLOR = "#ff5d8f"
 LEAF_COLOR = "#ffc857"
 PRUNED_COLOR = "#59628a"
 LINE = "#2c3868"
+CHOSEN_COLOR = "#ffe600"
 
 FONT = ("Segoe UI", 10)
 FONT_B = ("Segoe UI", 10, "bold")
@@ -33,8 +34,8 @@ FONT_XL = ("Segoe UI", 26, "bold")
 CELL = 72
 R = 28
 NODE_R = 18
-X_GAP = 54
-Y_GAP = 80
+COL_GAP = 110   # horizontal distance between depth levels
+ROW_GAP = 56    # vertical distance between leaves
 PAD = 44
 
 def fmt(v):
@@ -69,6 +70,13 @@ class GUI:
         self.last_move = None
         self.root_evals = {}
         self.best_col = None
+        self.zoom = 1.0
+        self.view = (0, 0, 0, 0)
+        self._draw_job = None
+        self._press = None
+        self._dragged = False
+        self.path = []
+        self.path_idx = 0
 
         self.setup = tk.Frame(root, bg=BG)
         self.main = tk.Frame(root, bg=BG)
@@ -234,6 +242,15 @@ class GUI:
         self.depth_label.pack(side="left")
         self.button(top, "Show more", lambda: self.change_depth(1)).pack(side="right")
         self.button(top, "Show less", lambda: self.change_depth(-1)).pack(side="right", padx=(0, 8))
+        self.button(top, "100%", self.fit_view).pack(side="right", padx=(0, 8))
+        self.button(top, "−", lambda: self.zoom_by(0.8)).pack(side="right", padx=(0, 8))
+        self.button(top, "+", lambda: self.zoom_by(1.25)).pack(side="right", padx=(0, 8))
+        nav = tk.Frame(depth_card, bg=CARD)
+        nav.pack(fill="x", pady=(8, 0))
+        self.button(nav, "Root", self.go_root).pack(side="left")
+        self.button(nav, "Next on path ▶", self.next_on_path).pack(side="left", padx=(8, 0))
+        self.path_label = tk.Label(nav, text="", bg=CARD, fg=MUTED, font=FONT)
+        self.path_label.pack(side="left", padx=10)
         tk.Label(depth_card, bg=CARD, fg=MUTED, font=("Segoe UI", 9), justify="left",
                  anchor="w", wraplength=620,
                  text="Only the first level is shown. Press \"Show more\" to open deeper levels "
@@ -249,14 +266,18 @@ class GUI:
         self.canvas = tk.Canvas(box, bg=CARD, width=640, height=480, highlightthickness=0,
                                 xscrollcommand=hbar.set, yscrollcommand=vbar.set)
         self.canvas.pack(fill="both", expand=True)
-        hbar.config(command=self.canvas.xview)
-        vbar.config(command=self.canvas.yview)
+        hbar.config(command=self.xscroll)
+        vbar.config(command=self.yscroll)
 
-        self.canvas.bind("<Button-1>", self.on_tree_click)
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Motion>", self.on_hover)
         self.canvas.bind("<Leave>", lambda e: self.tip.place_forget())
-        self.canvas.bind("<MouseWheel>",
-                         lambda e: self.canvas.yview_scroll(-(e.delta // 120), "units"))
+        self.canvas.bind("<MouseWheel>", self.on_wheel)
+        self.canvas.bind("<Shift-MouseWheel>", self.on_hwheel)
+        self.canvas.bind("<Control-MouseWheel>", self.on_zoom_wheel)
+        self.canvas.bind("<Configure>", lambda e: self.schedule_draw())
 
         self.tip = tk.Label(self.canvas, bg="#000000", fg=TEXT, font=("Consolas", 9),
                             justify="left", padx=8, pady=6)
@@ -277,6 +298,9 @@ class GUI:
         for var in self.stat_vars.values():
             var.set("-")
         self.canvas.delete("all")
+        self.path = []
+        self.path_idx = 0
+        self.path_label.config(text="")
         self.depth_label.config(text="Levels shown: -")
         self.tip.place_forget()
         self.update_scores()
@@ -455,6 +479,15 @@ class GUI:
                      'is_max': True, 'is_leaf': False, 'pruned': False,
                      'open': False, 'children': pending.get(1, [])}
         self.max_depth = deepest
+        self.mark_chosen(self.tree)
+        self.path = [self.tree]
+        while True:
+            nxt = next((c for c in self.path[-1]['children'] if c.get('chosen')), None)
+            if nxt is None:
+                break
+            self.path.append(nxt)
+        self.path_idx = 0
+        self.path_label.config(text=f"Path: 1 / {len(self.path)}")
         self.apply_depth()
 
     def change_depth(self, delta):
@@ -464,6 +497,23 @@ class GUI:
             cur = 1
         self.show_var.set(max(0, min(self.max_depth, cur + delta)))
         self.apply_depth()
+
+    def set_open(self, node, depth_limit):
+        node['open'] = node['depth'] < depth_limit
+        for child in node['children']:
+            self.set_open(child, depth_limit)
+
+    def mark_chosen(self, node):
+        # the child the parent actually picked = first child whose value equals the parent's value
+        best = None
+        for child in node['children']:
+            child['chosen'] = False
+            if best is None and child['value'] == node['value']:
+                best = child
+        if best is not None:
+            best['chosen'] = True
+        for child in node['children']:
+            self.mark_chosen(child)
 
     def apply_depth(self):
         if self.tree is None:
@@ -476,45 +526,77 @@ class GUI:
         self.show_var.set(limit)
         self.depth_label.config(text=f"Levels shown: {limit} / {self.max_depth}")
         self.set_open(self.tree, limit)
+        self.relayout()
         self.draw_tree()
 
-    def set_open(self, node, depth_limit):
-        node['open'] = node['depth'] < depth_limit
-        for child in node['children']:
-            self.set_open(child, depth_limit)
-
     def layout(self, node, counter):
-        node['y'] = node['depth']
+        # horizontal tree: depth goes left->right, leaves are stacked top->bottom
+        node['col'] = node['depth']
         if node['open'] and node['children']:
             for child in node['children']:
                 self.layout(child, counter)
-            node['x'] = (node['children'][0]['x'] + node['children'][-1]['x']) / 2
+            node['row'] = (node['children'][0]['row'] + node['children'][-1]['row']) / 2
+            node['r0'] = node['children'][0]['r0']      # subtree vertical extent (for culling)
+            node['r1'] = node['children'][-1]['r1']
         else:
-            node['x'] = counter[0]
+            node['row'] = node['r0'] = node['r1'] = counter[0]
             counter[0] += 1
+
+    def relayout(self):
+        if self.tree is None:
+            return
+        counter = [0]
+        self.layout(self.tree, counter)
+        self.units_w = (self.max_depth + 1) * COL_GAP
+        self.units_h = max(counter[0], 1) * ROW_GAP
+        self.world_w = max(self.units_w * self.zoom + 2 * PAD, 640)
+        self.world_h = max(self.units_h * self.zoom + 2 * PAD, 480)
+        self.canvas.config(scrollregion=(0, 0, self.world_w, self.world_h))
+
+    def schedule_draw(self):
+        if self._draw_job is None:
+            self._draw_job = self.root.after(16, self._do_draw)
+
+    def _do_draw(self):
+        self._draw_job = None
+        self.draw_tree()
 
     def draw_tree(self):
         self.canvas.delete("all")
         self.drawn = []
         if self.tree is None:
             return
-        counter = [0]
-        self.layout(self.tree, counter)
-        width = max(counter[0] * X_GAP + 2 * PAD, 640)
-        height = max((self.max_depth + 1) * Y_GAP + 2 * PAD, 480)
-        self.canvas.config(scrollregion=(0, 0, width, height))
+        m = NODE_R * self.zoom + 20
+        c = self.canvas
+        self.view = (c.canvasx(0) - m, c.canvasy(0) - m,
+                     c.canvasx(c.winfo_width()) + m, c.canvasy(c.winfo_height()) + m)
         self.draw_node(self.tree)
 
     def draw_node(self, node):
-        cx = node['x'] * X_GAP + PAD
-        cy = node['y'] * Y_GAP + PAD
+        z = self.zoom
+        vx0, vy0, vx1, vy1 = self.view
+        cx = node['col'] * COL_GAP * z + PAD
+        cy = node['row'] * ROW_GAP * z + PAD
+
+        # cull the whole subtree if it's right of the view or vertically outside it
+        if cx > vx1:
+            return
+        if node['r0'] * ROW_GAP * z + PAD > vy1 or node['r1'] * ROW_GAP * z + PAD < vy0:
+            return
 
         if node['open']:
             for child in node['children']:
-                ccx = child['x'] * X_GAP + PAD
-                ccy = child['y'] * Y_GAP + PAD
-                self.canvas.create_line(cx, cy, ccx, ccy, fill=LINE, width=2)
+                ccx = child['col'] * COL_GAP * z + PAD
+                ccy = child['row'] * ROW_GAP * z + PAD
+                if max(cy, ccy) >= vy0 and min(cy, ccy) <= vy1 and ccx >= vx0 and cx <= vx1:
+                    ch = child.get('chosen')
+                    self.canvas.create_line(cx, cy, ccx, ccy,
+                                            fill=CHOSEN_COLOR if ch else LINE,
+                                            width=max(1, round((3 if ch else 2) * z)))
                 self.draw_node(child)
+
+        if not (vx0 <= cx <= vx1 and vy0 <= cy <= vy1):
+            return
 
         if node['pruned']:
             color = PRUNED_COLOR
@@ -525,30 +607,139 @@ class GUI:
         else:
             color = MIN_COLOR
 
+        important = bool(node.get('chosen')) or node is self.tree
+        r = max(NODE_R * z, 6 if important else 3)
         folded = len(node['children']) > 0 and not node['open']
-        self.canvas.create_oval(cx - NODE_R, cy - NODE_R, cx + NODE_R, cy + NODE_R,
-                                fill=color, outline="white" if folded else CARD,
-                                width=3 if folded else 2)
-        label = "R" if node['move'] is None else str(node['move'])
-        self.canvas.create_text(cx, cy, text=label, fill="#0b1020",
-                                font=("Segoe UI", 10, "bold"))
-        self.canvas.create_text(cx, cy + NODE_R + 10, text=fmt(node['value']),
-                                fill=MUTED, font=("Segoe UI", 8))
-        self.drawn.append((cx, cy, node))
+        if node.get('chosen'):
+            outline, width = CHOSEN_COLOR, max(2, round(4 * z))
+        elif folded:
+            outline, width = "white", max(1, round(3 * z))
+        else:
+            outline, width = CARD, max(1, round(2 * z))
+        self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                fill=color, outline=outline, width=width)
+
+        # level of detail: no text when zoomed far out (except the chosen path)
+        if z >= 0.45:
+            label = "R" if node['move'] is None else str(node['move'])
+            self.canvas.create_text(cx, cy, text=label, fill="#0b1020",
+                                    font=("Segoe UI", max(6, int(10 * z)), "bold"))
+            if z >= 0.6:
+                self.canvas.create_text(cx, cy + r + 10 * z, text=fmt(node['value']),
+                                        fill=MUTED, font=("Segoe UI", max(6, int(8 * z))))
+        elif important:
+            label = "R" if node['move'] is None else str(node['move'])
+            self.canvas.create_text(cx + r + 4, cy, anchor="w",
+                                    text=f"{label}: {fmt(node['value'])}",
+                                    fill=CHOSEN_COLOR, font=("Segoe UI", 9, "bold"))
+        self.drawn.append((cx, cy, r, node))
 
     def node_at(self, event):
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
-        for cx, cy, node in self.drawn:
-            if (x - cx) ** 2 + (y - cy) ** 2 <= NODE_R ** 2:
+        for cx, cy, r, node in self.drawn:
+            if (x - cx) ** 2 + (y - cy) ** 2 <= r ** 2:
                 return node
         return None
 
-    def on_tree_click(self, event):
-        node = self.node_at(event)
-        if node is not None and node['children']:
-            node['open'] = not node['open']
-            self.draw_tree()
+    # ---------- navigation ----------
+    def center_at(self, px, py):
+        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+        self.canvas.xview_moveto(max(0, (px - cw / 2) / self.world_w))
+        self.canvas.yview_moveto(max(0, (py - ch / 2) / self.world_h))
+        self.draw_tree()
+
+    def go_to(self, node):
+        z = self.zoom
+        self.center_at(node['col'] * COL_GAP * z + PAD, node['row'] * ROW_GAP * z + PAD)
+
+    def go_root(self):
+        if self.tree is None:
+            return
+        self.path_idx = 0
+        self.path_label.config(text=f"Path: 1 / {len(self.path)}")
+        self.go_to(self.tree)
+
+    def next_on_path(self):
+        # step along the chosen path: root -> chosen child -> ... -> leaf -> back to root
+        if self.tree is None or len(self.path) < 2:
+            return
+        self.path_idx = self.path_idx + 1 if self.path_idx + 1 < len(self.path) else 0
+        for n in self.path[:self.path_idx]:
+            n['open'] = True
+        self.relayout()
+        self.path_label.config(text=f"Path: {self.path_idx + 1} / {len(self.path)}")
+        self.go_to(self.path[self.path_idx])
+
+    # ---------- zoom / pan / scroll ----------
+    def zoom_by(self, factor, ex=None, ey=None):
+        if self.tree is None:
+            return
+        old = self.zoom
+        new = max(0.25, min(3.0, old * factor))
+        if new == old:
+            return
+        if ex is None:
+            ex, ey = self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2
+        wx = (self.canvas.canvasx(ex) - PAD) / old     # world point under the cursor
+        wy = (self.canvas.canvasy(ey) - PAD) / old
+        self.zoom = new
+        self.relayout()
+        self.canvas.xview_moveto(max(0, wx * new + PAD - ex) / self.world_w)
+        self.canvas.yview_moveto(max(0, wy * new + PAD - ey) / self.world_h)
+        self.draw_tree()
+
+    def fit_view(self):
+        # back to the readable 100% size, from the top of the tree
+        if self.tree is None:
+            return
+        self.zoom = 1.0
+        self.relayout()
+        self.canvas.xview_moveto(0)
+        self.canvas.yview_moveto(0)
+        self.draw_tree()
+
+    def on_zoom_wheel(self, e):
+        self.zoom_by(1.15 if e.delta > 0 else 1 / 1.15, e.x, e.y)
+
+    def on_wheel(self, e):
+        self.canvas.yview_scroll(-(e.delta // 120), "units")
+        self.schedule_draw()
+
+    def on_hwheel(self, e):
+        self.canvas.xview_scroll(-(e.delta // 120), "units")
+        self.schedule_draw()
+
+    def xscroll(self, *args):
+        self.canvas.xview(*args)
+        self.schedule_draw()
+
+    def yscroll(self, *args):
+        self.canvas.yview(*args)
+        self.schedule_draw()
+
+    def on_press(self, e):
+        self._press = (e.x, e.y)
+        self._dragged = False
+        self.canvas.scan_mark(e.x, e.y)
+
+    def on_drag(self, e):
+        if self._press is None:
+            return
+        if not self._dragged and abs(e.x - self._press[0]) + abs(e.y - self._press[1]) < 4:
+            return
+        self._dragged = True
+        self.canvas.scan_dragto(e.x, e.y, gain=1)
+        self.schedule_draw()
+
+    def on_release(self, e):
+        if not self._dragged:                      # plain click = open/fold
+            node = self.node_at(e)
+            if node is not None and node['children']:
+                node['open'] = not node['open']
+                self.relayout()
+                self.draw_tree()
+        self._press = None
 
     def on_hover(self, event):
         node = self.node_at(event)
