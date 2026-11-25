@@ -36,7 +36,10 @@ R = 28
 NODE_R = 18
 COL_GAP = 110   # horizontal distance between depth levels
 ROW_GAP = 56    # vertical distance between leaves
+V_COL_GAP = 80  # top-down mode: distance between depth levels
+V_ROW_GAP = 54  # top-down mode: distance between leaves
 PAD = 44
+MIN_ZOOM = 0.002   # how far you can zoom out
 
 def fmt(v):
     if v is None:
@@ -77,6 +80,7 @@ class GUI:
         self._dragged = False
         self.path = []
         self.path_idx = 0
+        self.top_down = False   # False: root left, depth -> right. True: root top, depth -> down
 
         self.setup = tk.Frame(root, bg=BG)
         self.main = tk.Frame(root, bg=BG)
@@ -243,6 +247,8 @@ class GUI:
         self.button(top, "Show more", lambda: self.change_depth(1)).pack(side="right")
         self.button(top, "Show less", lambda: self.change_depth(-1)).pack(side="right", padx=(0, 8))
         self.button(top, "100%", self.fit_view).pack(side="right", padx=(0, 8))
+        self.orient_btn = self.button(top, "Top-down ↓", self.toggle_orientation)
+        self.orient_btn.pack(side="right", padx=(0, 8))
         self.button(top, "−", lambda: self.zoom_by(0.8)).pack(side="right", padx=(0, 8))
         self.button(top, "+", lambda: self.zoom_by(1.25)).pack(side="right", padx=(0, 8))
         nav = tk.Frame(depth_card, bg=CARD)
@@ -504,16 +510,18 @@ class GUI:
             self.set_open(child, depth_limit)
 
     def mark_chosen(self, node):
-        # the child the parent actually picked = first child whose value equals the parent's value
-        best = None
-        for child in node['children']:
-            child['chosen'] = False
-            if best is None and child['value'] == node['value']:
-                best = child
-        if best is not None:
+        # follow ONLY the principal path: root -> chosen child -> its chosen child -> ...
+        # chosen child = first child whose value equals the parent's value
+        while node['children']:
+            best = None
+            for child in node['children']:
+                child['chosen'] = False
+                if best is None and child['value'] == node['value']:
+                    best = child
+            if best is None:
+                break
             best['chosen'] = True
-        for child in node['children']:
-            self.mark_chosen(child)
+            node = best
 
     def apply_depth(self):
         if self.tree is None:
@@ -547,8 +555,11 @@ class GUI:
             return
         counter = [0]
         self.layout(self.tree, counter)
-        self.units_w = (self.max_depth + 1) * COL_GAP
-        self.units_h = max(counter[0], 1) * ROW_GAP
+        depth_n, leaf_n = self.max_depth + 1, max(counter[0], 1)
+        if self.top_down:
+            self.units_w, self.units_h = leaf_n * V_ROW_GAP, depth_n * V_COL_GAP
+        else:
+            self.units_w, self.units_h = depth_n * COL_GAP, leaf_n * ROW_GAP
         self.world_w = max(self.units_w * self.zoom + 2 * PAD, 640)
         self.world_h = max(self.units_h * self.zoom + 2 * PAD, 480)
         self.canvas.config(scrollregion=(0, 0, self.world_w, self.world_h))
@@ -572,23 +583,33 @@ class GUI:
                      c.canvasx(c.winfo_width()) + m, c.canvasy(c.winfo_height()) + m)
         self.draw_node(self.tree)
 
+    def node_xy(self, node):
+        z = self.zoom
+        if self.top_down:
+            return node['row'] * V_ROW_GAP * z + PAD, node['col'] * V_COL_GAP * z + PAD
+        return node['col'] * COL_GAP * z + PAD, node['row'] * ROW_GAP * z + PAD
+
     def draw_node(self, node):
         z = self.zoom
         vx0, vy0, vx1, vy1 = self.view
-        cx = node['col'] * COL_GAP * z + PAD
-        cy = node['row'] * ROW_GAP * z + PAD
+        cx, cy = self.node_xy(node)
 
-        # cull the whole subtree if it's right of the view or vertically outside it
-        if cx > vx1:
-            return
-        if node['r0'] * ROW_GAP * z + PAD > vy1 or node['r1'] * ROW_GAP * z + PAD < vy0:
-            return
+        # cull the whole subtree if it is past the view in depth direction
+        # or outside the view along the leaf axis
+        g = (V_ROW_GAP if self.top_down else ROW_GAP) * z
+        lo, hi = node['r0'] * g + PAD, node['r1'] * g + PAD
+        if self.top_down:
+            if cy > vy1 or lo > vx1 or hi < vx0:
+                return
+        else:
+            if cx > vx1 or lo > vy1 or hi < vy0:
+                return
 
         if node['open']:
             for child in node['children']:
-                ccx = child['col'] * COL_GAP * z + PAD
-                ccy = child['row'] * ROW_GAP * z + PAD
-                if max(cy, ccy) >= vy0 and min(cy, ccy) <= vy1 and ccx >= vx0 and cx <= vx1:
+                ccx, ccy = self.node_xy(child)
+                if (max(cx, ccx) >= vx0 and min(cx, ccx) <= vx1
+                        and max(cy, ccy) >= vy0 and min(cy, ccy) <= vy1):
                     ch = child.get('chosen')
                     self.canvas.create_line(cx, cy, ccx, ccy,
                                             fill=CHOSEN_COLOR if ch else LINE,
@@ -650,8 +671,16 @@ class GUI:
         self.draw_tree()
 
     def go_to(self, node):
-        z = self.zoom
-        self.center_at(node['col'] * COL_GAP * z + PAD, node['row'] * ROW_GAP * z + PAD)
+        px, py = self.node_xy(node)
+        self.center_at(px, py)
+
+    def toggle_orientation(self):
+        self.top_down = not self.top_down
+        self.orient_btn.config(text="Left-right →" if self.top_down else "Top-down ↓")
+        if self.tree is None:
+            return
+        self.relayout()
+        self.go_to(self.tree)
 
     def go_root(self):
         if self.tree is None:
@@ -676,7 +705,7 @@ class GUI:
         if self.tree is None:
             return
         old = self.zoom
-        new = max(0.25, min(3.0, old * factor))
+        new = max(MIN_ZOOM, min(3.0, old * factor))
         if new == old:
             return
         if ex is None:
